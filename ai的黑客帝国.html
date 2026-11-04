@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>MATRIX // rain</title>
+<style>
+  html,body{margin:0;padding:0;height:100%;background:#000;overflow:hidden;cursor:none}
+  canvas{display:block;width:100vw;height:100vh}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+(function(){
+const cv  = document.getElementById('c');
+const ctx = cv.getContext('2d', {alpha:false});
+let W, H, dpr, cols = [], overlay = null;
+
+// ---------- 字符池 ----------
+const KATA  = 'ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝｦｧｨｩｪｫｬｭｮｯ'.split('');
+const NUM   = '0123456789'.split('');
+const LAT   = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'.split('');
+const SYM   = '<>[]{}/\\|=+*#$%&@!?;:~^-_'.split('');
+const CHARS = KATA.concat(NUM, LAT, SYM);
+const ODD   = '虛無空真幻醒迷矩陣數位熵零壹爻ØÞΩΨ†'.split('');
+
+// 台词库：官方中文战斗语音（流浪者 / 魈 / 枫原万叶）
+const CAST = [
+  {
+    tag: '流浪者 · SCARAMOUCHE', color: '#c6a6ff',
+    lines: [
+      // 元素战技「羽画·风姿华歌」
+      '风起！','俯瞰凡尘！','怒风腾天！',
+      // 元素爆发「狂言·式乐五番」
+      '不度蝼蚁！','鼠雀之辈！','叫大声点！','把头低下！','毫无自知之明！','就凭你，也配直视我？',
+      // 冲刺
+      '风驰！','疾风随行！','…真慢。','没叫你跟着。',
+      // 受击 / 低血量 / 倒下
+      '不过如此。','…可笑。','…你死定了。','等着求饶吧。','习惯了。','不值一提。',
+      '坠入…深渊…','皆为…徒劳…','罪业的报偿…'
+    ]
+  },
+  {
+    tag: '魈 · XIAO', color: '#5ff0bb',
+    lines: [
+      // 元素战技「风轮两立」
+      '哼。','无聊。','无用。',
+      // 下落攻击
+      '这里！','无能。',
+      // 元素爆发「靖妖傩舞」
+      '就此消失。','靖妖傩舞。','悲鸣吧。',
+      // 受击 / 低血量 / 他人濒危
+      '住口。','愚蠢。','很好。','…弱小。','想活命，就退后。','就凭你？','别妨碍我。',
+      // 加入队伍 / 倒下
+      '听召而来。','诸邪退散。','降魔乃分内之事。',
+      '这是…报应吗。','这一天…到来了呀。','不可能…'
+    ]
+  },
+  {
+    tag: '枫原万叶 · KAZUHA', color: '#ff9a6e',
+    lines: [
+      // 元素战技「千早振」
+      '起！','嘿！','踏风！','御风而行。','朔风解意。','往返自然！',
+      // 元素爆发「万叶之一刀」（取自《万叶集》）
+      '云隐…雁鸣！','风共云行。','可叹，落叶飘零。',
+      // 冲刺 / 展翼
+      '该出发了。','顺着风的方向。',
+      // 受击 / 低血量 / 他人濒危
+      '呼、有一套嘛…','静心凝神。','保持专注！','换我来保护你了！','你可以把后背交给我。','不要…紧。',
+      // 倒下
+      '深感遗憾…','下次…绝不会再…','结束了吗…'
+    ]
+  }
+];
+
+const FONT = '"MS Gothic","Yu Gothic","Microsoft YaHei",Consolas,Monaco,monospace';
+const rnd  = (a,b)=> a + Math.random()*(b-a);
+const pick = a   => a[(Math.random()*a.length)|0];
+const chance = p => Math.random() < p;
+
+let CHAOS = false;              // 空格切换：优雅 / 狂暴
+
+// ---------- 布局：纵向覆盖 ----------
+function resize(){
+  dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+  W = window.innerWidth; H = window.innerHeight;
+  cv.width  = Math.floor(W*dpr);
+  cv.height = Math.floor(H*dpr);
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.textBaseline = 'top';
+  buildColumns();
+  buildOverlay();
+  ctx.fillStyle = '#000'; ctx.fillRect(0,0,W,H);
+}
+
+function buildColumns(){
+  cols = [];
+  let x = -rnd(0, 30);
+  while (x < W + 40){
+    const t    = Math.pow(Math.random(), 1.6);          // 偏小字，偶尔出现大字列
+    const size = Math.round(11 + t*26);
+    const roll = Math.random();
+    cols.push({
+      x, size,
+      gap:    size * rnd(0.92, 1.25),                   // 行距不规则
+      head:   rnd(-H*1.5, H),
+      speed:  (CHAOS?rnd(2.2,7):rnd(1.2,4.6)) + t*5,
+      drift:  0.22,                                     // 字符本体跟着下沉的比例 -> "飘"
+      items:  [],
+      max:    Math.round(rnd(7, 18) + t*8),
+      mode:   roll < 0.09 ? 'cyan' : (roll < 0.17 ? 'deep' : 'green'),
+      dim:    0.42 + Math.random()*0.62,
+      freeze: 0
+    });
+    x += size * rnd(0.72, 1.02);                        // 列宽不等 -> 排版天然乱
+  }
+}
+
+// ---------- 扫描线 + 暗角 ----------
+function buildOverlay(){
+  overlay = document.createElement('canvas');
+  overlay.width = Math.floor(W*dpr); overlay.height = Math.floor(H*dpr);
+  const o = overlay.getContext('2d');
+  o.scale(dpr,dpr);
+  o.fillStyle='rgba(0,0,0,0.13)';
+  for(let y=0;y<H;y+=3) o.fillRect(0,y,W,1);
+  const g=o.createRadialGradient(W/2,H/2,Math.min(W,H)*0.22,W/2,H/2,Math.max(W,H)*0.75);
+  g.addColorStop(0,'rgba(0,0,0,0)');
+  g.addColorStop(0.6,'rgba(0,0,0,0.26)');
+  g.addColorStop(1,'rgba(0,0,0,0.9)');
+  o.fillStyle=g; o.fillRect(0,0,W,H);
+}
+
+// ---------- 诞生一个新字符：此处决定"突变大小" ----------
+function spawn(c, big){
+  const r = big ? 1 : Math.random();
+  let mul = 1, bigFlag = false;
+  if (r < 0.05)      { mul = rnd(1.7, 2.9); bigFlag = true; }   // 突然大字
+  else if (r < 0.115){ mul = rnd(0.4, 0.62); }                  // 突然小字
+  else                 mul = rnd(0.88, 1.12);
+  return {
+    y: c.head, size: c.size*mul, big: bigFlag,
+    ch: chance(0.018) ? pick(ODD) : pick(CHARS),                                                   // 偶尔蹦个看不懂的字
+    dx: rnd(-2.2, 2.2),
+    flick: true
+  };
+}
+
+// ---------- 故障 ----------
+function tear(){
+  const n = 1 + (Math.random()*2|0);
+  for(let i=0;i<n;i++){
+    const h = rnd(6,50), sy = Math.random()*(H-h), dx = rnd(-45,45);
+    ctx.drawImage(cv, 0, sy*dpr, W*dpr, h*dpr, dx, sy, W, h);
+  }
+}
+function invertBand(){
+  const h = rnd(3,34), sy = Math.random()*(H-h);
+  ctx.globalCompositeOperation='difference';
+  ctx.fillStyle='rgba(255,255,255,'+rnd(0.3,0.8)+')';
+  ctx.fillRect(0,sy,W,h);
+  ctx.globalCompositeOperation='source-over';
+}
+function storm(){
+  tear(); invertBand(); tear();
+  for(const c of cols){ if(chance(0.55)){ c.freeze = 3+(Math.random()*9|0); } }
+}
+
+// ---------- 低语字幕 ----------
+const wh = { who:null, text:'', a:0, start:0, phase:0, next:rnd(6000,14000) };
+function tickWhisper(ts){
+  if (wh.phase===0){
+    if(ts>wh.next){
+      wh.who  = pick(CAST);
+      wh.text = pick(wh.who.lines);
+      wh.start=ts; wh.phase=1;
+      if(chance(0.5)) invertBand();
+    }
+    return;
+  }
+  const t = ts-wh.start;
+  if (t<1600)            wh.a = t/1600;
+  else if (t<4600)       wh.a = 1;
+  else if (t<6800)       wh.a = 1-(t-4600)/2200;
+  else { wh.a=0; wh.phase=0; wh.next = ts + rnd(7000,16000); }
+}
+function drawWhisper(){
+  if (wh.a<=0.01 || !wh.who) return;
+  const s   = Math.max(16, Math.min(W,H)*0.05);
+  const col = wh.who.color;
+  const ease = wh.a*wh.a;
+  ctx.save();
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+
+  // 角色标签
+  ctx.font = '400 '+Math.round(s*0.3)+'px '+FONT;
+  try{ ctx.letterSpacing = Math.round(s*0.22)+'px'; }catch(e){}
+  ctx.globalAlpha = ease*0.7;
+  ctx.shadowColor = col; ctx.shadowBlur = 12;
+  ctx.fillStyle  = col;
+  ctx.fillText(wh.who.tag, W/2, H*0.5 - s*0.85);
+
+  // 台词本体
+  ctx.font = '600 '+s+'px '+FONT;
+  try{ ctx.letterSpacing = Math.round(s*0.3)+'px'; }catch(e){}
+  ctx.globalAlpha = ease*0.95;
+  ctx.shadowBlur  = 26;
+  ctx.fillStyle   = '#eafff2';
+  ctx.fillText(wh.text, W/2, H*0.5);
+
+  // 台词下方一道细光
+  const tw = ctx.measureText(wh.text).width;
+  ctx.shadowBlur = 18;
+  ctx.globalAlpha = ease*0.5;
+  ctx.fillStyle = col;
+  ctx.fillRect(W/2 - tw/2, H*0.5 + s*0.78, tw, Math.max(1, s*0.025));
+
+  ctx.restore();
+  ctx.textAlign='left'; ctx.textBaseline='top'; ctx.shadowBlur=0;
+  try{ ctx.letterSpacing = '0px'; }catch(e){}
+}
+
+// ---------- 主绘制 ----------
+function draw(){
+  ctx.globalCompositeOperation='source-over';
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = 'rgba(0,0,0,'+(CHAOS?0.07:0.1)+')';
+  ctx.fillRect(0,0,W,H);
+
+  const accent = (wh.a > 0.05 && wh.who) ? wh.who.color : null;
+  for(const c of cols){
+    // 推进
+    if (c.freeze > 0){ c.freeze--; }               // 偶发凝滞
+    else             { c.head += c.speed; }
+
+    // 生成新头字符
+    const last = c.items[c.items.length-1];
+    if (!last || c.head - last.y >= c.gap*(last.size/c.size)*0.9){
+      c.items.push(spawn(c, CHAOS && chance(0.25)));
+    }
+    // 队列整体缓慢下沉 -> 飘移感
+    for(const it of c.items) it.y += c.speed * c.drift;
+    // 限长 / 出屏回收
+    while (c.items.length > c.max) c.items.shift();
+    while (c.items.length && c.items[0].y > H + 120) c.items.shift();
+
+    // 绘制（索引越大 = 越接近头部 = 越亮）
+    const n = c.items.length;
+    for(let k=0;k<n;k++){
+      const it = c.items[k];
+      const near = (k+1)/n;                                  // 0=尾 1=头
+      const a    = Math.pow(near, 1.5) * c.dim;
+      // 接近头部的字符会原地乱码跳动
+      if (near > 0.7 && chance(CHAOS?0.18:0.09)) it.ch = pick(CHARS);
+
+      ctx.font = it.size + 'px ' + FONT;
+
+      let fill;
+      if (k === n-1){
+        // 台词浮现期间：水滴头会被该角色的主题色染上一部分
+        const acc = accent && chance(0.28);
+        fill = chance(0.004) ? '#ffffff' : (acc ? accent : '#dffff0');   // 头：白亮 + 光晕
+        ctx.shadowColor = acc ? accent : (c.mode==='cyan' ? '#00e5ff' : '#00ff41');
+        ctx.shadowBlur  = it.big ? 22 : 12;
+      } else if (k === n-2){
+        fill = 'rgba(160,255,190,0.9)';
+        ctx.shadowBlur  = it.big ? 14 : 6;
+      } else {
+        ctx.shadowBlur = 0;
+        fill = c.mode==='cyan' ? 'rgba(0,215,255,'+(a*0.85)+')'
+             : c.mode==='deep' ? 'rgba(0,150,70,'+(a*0.85)+')'
+             :                   'rgba(0,255,70,'+a+')';
+      }
+      ctx.fillStyle = fill;
+      ctx.fillText(it.ch, c.x + it.dx, it.y);
+    }
+    ctx.shadowBlur = 0;
+
+    // 整列跑出屏幕后重置
+    if (c.head - c.max*c.gap > H + 200){
+      c.head  = rnd(-600, -60);
+      c.speed = (CHAOS?rnd(2.2,7):rnd(1.2,4.6)) + (c.size/40)*5;
+      c.items.length = 0;
+      c.max   = Math.round(rnd(7, 18));
+      c.dim   = 0.42 + Math.random()*0.62;
+    }
+  }
+
+  // 稀疏故障，不抢戏
+  if (chance(CHAOS?0.02:0.006)) tear();
+  if (chance(CHAOS?0.012:0.0025)) invertBand();
+  ctx.shadowBlur = 0;
+
+  ctx.drawImage(overlay, 0, 0, W, H);
+}
+
+// ---------- 主循环 ~34fps ----------
+let last = 0;
+function loop(ts){
+  requestAnimationFrame(loop);
+  if (ts - last < 29) return;
+  last = ts;
+  draw();
+  tickWhisper(ts);
+  drawWhisper();
+}
+
+addEventListener('resize', resize);
+addEventListener('pointerdown', storm);
+addEventListener('contextmenu', e=>{ e.preventDefault(); storm(); });
+addEventListener('keydown', e=>{
+  if (e.code === 'Space'){ e.preventDefault(); CHAOS = !CHAOS; buildColumns(); }
+  else storm();
+});
+
+resize();
+requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
